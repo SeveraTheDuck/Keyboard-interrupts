@@ -70,7 +70,7 @@ New09Interrupt	proc
 		and al, not HIGH_BIT_MASK			; disable keyboard
 		out 61h, al
 
-		mov al, 20h							; send end of input to interrupt controller
+		mov al, 20h					; send end of input to interrupt controller
 		out 20h, al
 
 		pop es bx ax

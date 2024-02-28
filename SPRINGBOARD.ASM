@@ -7,8 +7,6 @@ org 100h
 INTERRUPT_ADDRESS_SIZE		equ DWORD		; segment and offset
 SYMBOLS_COLOR			equ 4eh			; color of new symbols
 VIDEO_MEMORY_ADDRESS		equ 0b800h		; segment where video memory starts
-
-HIGH_BIT_MASK			equ 80h			; 10000000b
 ;----------------------------------------------------------
 
 Start:
@@ -24,7 +22,7 @@ Start:
 		mov es, bx				; es = 0
 
 		;----------------------
-		; We want to safe and use old interrupt
+		; We want to save and use old interrupt
 		;----------------------
 		mov ax, 3509h				; DOS Fn 35h - Get Interrupt Vector
 		int 21h					; es = segment, bx = offset
