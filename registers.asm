@@ -18,7 +18,7 @@ VIDEO_MEM_CELL_SIZE		equ WORD	; two bytes: color and symbol
 LINE_LENGTH_IN_SYMBOLS		equ 80		; window width in symbols
 LINES_NUMBER			equ 25		; window height in symbols
 
-NUM_OF_REGISTERS		equ 12		; number of registers
+NUM_OF_REGISTERS		equ 13		; number of registers
 EACH_REGISTER_STRING_SIZE	equ 5		; size of string like "AX = "
 OPEN_FRAME_KEY                  equ 2dh         ; press X to open keyboard
 INTERRUPT_ADDRESS_SIZE		equ DWORD	; segment and offset
@@ -34,64 +34,6 @@ INTERRUPT_ADDRESS_SIZE		equ DWORD	; segment and offset
 Start:		jmp main
 ;----------------------------------------------------------
 ;----------------------------------------------------------
-		
-
-
-;----------------------------------------------------------
-; COPYPASTAAAAAAAAAAAAAAAAAAAAAAACOPYPASTAAAAAAAAAAAAAAAAAAAAAAACOPYPASTAAAAAAAAAAAAAAAAAAAAAAA
-; Function changes 08 interrupt address and saves old one 
-; in Old08Segment and Old08Offset.
-; Enter: none
-; Exit:  Old08Offset, Old08Segment 
-; Destr: AX, BX, ES, IF
-;----------------------------------------------------------
-SetNew08Interrupt       proc
-
-                ;----------------------
-		; We do not want our interrupt to start
-		; while we are fixing interrupt address.
-		; That is why we set interrupt flag to 0,
-		; to avoid interrupts.
-		;----------------------
-		cli					; IF = 0
-
-		xor bx, bx				; BX = 0
-		mov es, bx				; ES = 0
-
-		;----------------------
-		; We want to save and use old interrupt
-		;----------------------
-		mov ax, 3508h				; DOS Fn 35h - Get Interrupt Vector
-		int 21h					; ES = segment, bx = offset
-
-		mov Old08Offset, bx			; get old offset
-		mov bx, es				; BX = ES
-		mov Old08Segment, bx			; get old segment
-
-		;----------------------
-		; Now we change interrupt address
-		; to our interrupt code segment
-		;----------------------
-		xor bx, bx				; BX = 0
-		mov es, bx				; ES = 0
-
-		mov bx, 08h * INTERRUPT_ADDRESS_SIZE	; we change 8-th interrupt
-		mov es:[bx], offset New08Interrupt	; set offset
-
-		push cs
-		pop ax					; AX -> code
-		mov es:[bx + WORD], ax			; set segment
-
-		;----------------------
-		; Now we can use our interrupt
-		; IF = 1
-		;----------------------
-		sti
-
-                ret
-                endp
-;----------------------------------------------------------
-;----------------------------------------------------------
 
 
 
@@ -104,30 +46,19 @@ SetNew08Interrupt       proc
 ;----------------------------------------------------------
 New08Interrupt  proc
 
-                pushf						; push flags
-                push ax bx cx dx si di bp sp ds es ss cs cs	; push all registers (except IP)
+		cmp cs:frame_is_printed, 1
+		jne GoOld08Interrupt
+
+                push ss es ds sp bp di si dx cx bx ax	; push all registers (except IP)
+
+		push cs					; ds = cs for data
 		pop ds
 
-		mov ah, FRAME_COLOR				; AH = FRAME_COLOR
-                mov di, (X_BEGIN + 1 + EACH_REGISTER_STRING_SIZE + Y_BEGIN * LINE_LENGTH_IN_SYMBOLS) * VIDEO_MEM_CELL_SIZE
-		mov cx, NUM_OF_REGISTERS			; CX = NUM_OF_REGISTERS
+		call PrintFrameWithRegs
 
-		mov bp, sp					; BP -> stack head
-		add bp, (NUM_OF_REGISTERS - 1) * WORD		; BP -> begin of registers
-
-PrintRegisterValue:
-		push di						; save begin of output
-
-		call PrintHexWordFromStack			; print value
-
-		pop di						; go to next line begin
-		add di, LINE_LENGTH_IN_SYMBOLS * VIDEO_MEM_CELL_SIZE
-		loop PrintRegisterValue				; loop for num of registers
+                pop ax bx cx dx si di bp sp ds es ss		; pop all registers
 
 GoOld08Interrupt:
-		add sp, WORD					; cannot pop cs
-                pop ss es ds sp bp di si dx cx bx ax		; pop all registers
-                popf						; pop flags
 
 		;----------------------
 		; self-defining code with long jump
@@ -144,6 +75,48 @@ Old08Segment	dw 0
 
 
 ;----------------------------------------------------------
+;
+;
+;
+;
+;----------------------------------------------------------
+PrintFrameWithRegs	proc
+
+		mov ax, 0b800h
+		mov es, ax			; es = video memory segment
+
+		;----------------------
+                ; set args for PrintFrame function
+                ;----------------------
+                mov ah, FRAME_COLOR
+                mov bl, FRAME_WIDTH
+                mov bh, FRAME_HEIGHT
+                mov si, offset frame_pattern
+                mov di, (X_BEGIN + (Y_BEGIN - 1) * LINE_LENGTH_IN_SYMBOLS) * VIDEO_MEM_CELL_SIZE
+                cld
+		call PrintFrame
+
+		call PrintRegisterNames		; Prints registers' names in the frame
+
+        	mov di, (X_BEGIN + 1 + EACH_REGISTER_STRING_SIZE + Y_BEGIN * LINE_LENGTH_IN_SYMBOLS) * VIDEO_MEM_CELL_SIZE
+		mov cx, NUM_OF_REGISTERS			; CX = NUM_OF_REGISTERS
+
+		mov bp, sp					; BP -> stack head
+		add bp, WORD + BYTE
+
+PrintRegisterValue:
+		push di						; save begin of output
+
+		call PrintHexWordFromStack			; print value
+
+		pop di						; go to next line begin
+		add di, LINE_LENGTH_IN_SYMBOLS * VIDEO_MEM_CELL_SIZE
+		loop PrintRegisterValue				; loop for num of registers
+
+		ret
+		endp
+
+;----------------------------------------------------------
 ; Function prints value from stack and moves bp
 ; Enter: AH = print_color, BP = stack_value_offset, DI = output_offset,
 ;	 ES = video_memory_segment
@@ -155,7 +128,7 @@ PrintHexWordFromStack	proc
 		push cx			; save external loop iterator
 
 		mov cx, WORD		; CX = 2
-		mov bx, 0b800h		
+		mov bx, 0b800h
 		mov es, bx		; ES = video memory segment
 
 		lea bx, hex_digitals	; bx -> hex_digitals array
@@ -170,10 +143,10 @@ PrintHexSymbol:	mov al, ss:[bp]		; al = ss:[bp], half of register
 		xlat			; same as above
 		stosw			; same as above
 
-		add bp, BYTE		; bp++ for second half of register
+		sub bp, BYTE		; bp++ for second half of register
 		loop PrintHexSymbol
 
-		sub bp, DWORD		; bp -= 2 * WORD for next register
+		add bp, DWORD
 
 		pop cx			; get external loop iterator
 		ret
@@ -192,40 +165,16 @@ PrintHexSymbol:	mov al, ss:[bp]		; al = ss:[bp], half of register
 ;----------------------------------------------------------
 New09Interrupt  proc
 
-                pushf				; push flags
-                push ax bx cx si di es ds cs	; push used registers
-                pop ds				; ds = cs
+                push ax
 
                 in al, 60h                      ; al = new scan code
                 cmp al, OPEN_FRAME_KEY          ; if (al != OPEN_FRAME_KEY)
                 jne GoOld09Interrupt            ;       GoOld09Interrupt;
 
-                ;----------------------
-                ; if OPEN_FRAME_KEY was pressed, print frame
-                ;----------------------
-                mov ax, 0b800h
-		mov es, ax			; es = video memory segment
-
-                ;----------------------
-                ; set args for PrintFrame function
-                ;----------------------
-                mov ah, FRAME_COLOR
-                mov bl, FRAME_WIDTH
-                mov bh, FRAME_HEIGHT
-                mov si, offset frame_pattern
-                mov di, (X_BEGIN + (Y_BEGIN - 1) * LINE_LENGTH_IN_SYMBOLS) * VIDEO_MEM_CELL_SIZE
-                cld
-		call PrintFrame
-
-		call PrintRegisterNames		; Prints registers' names in the frame
-
-		cmp Old08Offset, 0		; if (Old08Offset == 0) SetNew08Interrupt;
-		jne GoOld09Interrupt
-		call SetNew08Interrupt
+		mov cs:frame_is_printed, 1	; frame print flag to true
 
 GoOld09Interrupt:
-                pop ds es di si cx bx ax	; pop used registers
-                popf				; pop flags
+                pop ax				; pop used registers
 
 		;----------------------
 		; self-defining code with long jump
@@ -243,7 +192,7 @@ Old09Segment	dw 0
 
 ;----------------------------------------------------------
 ; PrintFrame prints a frame at given place with given color and symbols
-; Enter: AH = FRAME_COLOR,          BL = frame_width,   BH = frame_heigth, 
+; Enter: AH = FRAME_COLOR,          BL = frame_width,   BH = frame_heigth,
 ; 	 ES = VIDEO_MEMORY_ADDRESS, SI -> pattern_line, DI = frame_corner, DF = 0
 ; Exit:  none
 ; Destr: AX, BX, CX, SI, DI
@@ -276,7 +225,7 @@ MiddleRows:	;----------------------
 		mov cl, bl
 		sub cl, NUM_OF_LINE_BORDER_SYMBOLS
 		call PrintRow
-		
+
 		;----------------------
 		; get cx value for external loop
 		;----------------------
@@ -285,7 +234,7 @@ MiddleRows:	;----------------------
 		;----------------------
 		; si -= 3 during the loop
 		; for repeating pattern
-		;---------------------- 	
+		;----------------------
 		sub si, PATTERN_STRING_STEP
 
 		loop MiddleRows
@@ -297,7 +246,7 @@ MiddleRows:	;----------------------
 		;----------------------
 		xor cx, cx
 		mov cl, bl
-		sub cl, NUM_OF_LINE_BORDER_SYMBOLS 
+		sub cl, NUM_OF_LINE_BORDER_SYMBOLS
 		add si, PATTERN_STRING_STEP
 		call PrintRow
 
@@ -315,18 +264,18 @@ MiddleRows:	;----------------------
 ; Destr: AL, CX, SI, DI
 ;----------------------------------------------------------
 PrintRow	proc
-		
+
 		push di         ; remember start position for quick return
 
 		lodsb           ; read pattern symbol
 		stosw           ; print first symbol
-		
+
 		lodsb           ; read pattern symbol
 		rep stosw       ; print internal symbols
 
 		lodsb           ; read pattern symbol
 		stosw           ; print last symbol
-		
+
 		;----------------------
 		; return start position
 		; and move to next line
@@ -374,18 +323,18 @@ PrintRegisterSymbol:
 ;----------------------------------------------------------
 ;----------------------------------------------------------
 
-
+frame_is_printed	db 0
 
 ;----------------------------------------------------------
 ; String with all hex digitals in place of their integer equivalent
 ;----------------------------------------------------------
-hex_digitals	db "0123456789ABCDEF"
+hex_digitals		db "0123456789ABCDEF"
 
 ;----------------------------------------------------------
 ; String with registers' phrases to print in the frame
 ;----------------------------------------------------------
 registers_string 	db "AX = BX = CX = DX = SI = DI = ", \
-			   "BP = SP = DS = ES = SS = CS = "
+			   "BP = SP = DS = ES = SS = IP = CS = "
 
 ;----------------------------------------------------------
 ; string with frame pattern
@@ -397,11 +346,21 @@ EndOfFile:
 
 
 ;----------------------------------------------------------
-; Function start and end, calls for SetNew09Interrupt and 
+; Function start and end, calls for SetNew09Interrupt and
 ; terminates program and stays resident with amount of segments in dx.
 ; dx = (EndOfFile - Start) / 16 + 1
 ;----------------------------------------------------------
-main:		call SetNew09Interrupt
+main:		mov al, 08h
+		mov cx, offset New08Interrupt
+		mov si, offset Old08Offset
+		mov di, offset Old08Segment
+		call SetNewNInterrupt
+
+		mov al, 09h
+		mov cx, offset New09Interrupt
+		mov si, offset Old09Offset
+		mov di, offset Old09Segment
+		call SetNewNInterrupt
 
                 ;----------------------
 		; Save code in memory after end of program
@@ -415,15 +374,17 @@ main:		call SetNew09Interrupt
 ;----------------------------------------------------------
 ;----------------------------------------------------------
 
+
+
 ;----------------------------------------------------------
-; COPYPASTAAAAAAAAAAAAAAAAAAAAAAACOPYPASTAAAAAAAAAAAAAAAAAAAAAAACOPYPASTAAAAAAAAAAAAAAAAAAAAAAA
-; Function changes 09 interrupt address and saves old one 
-; in Old09Segment and Old09Offset.
-; Enter: none
-; Exit:  Old09Offset, Old09Segment 
+; Function changes N-th interrupt address and saves old one
+; in OldNSegment and OldNOffset.
+; Enter: AL = interrupt_number, SI -> OldNOffzet, DI -> OldNSegment,
+;	 CX -> NewNInterrupt
+; Exit:  OldNOffset, OldNSegment
 ; Destr: AX, BX, ES, IF
 ;----------------------------------------------------------
-SetNew09Interrupt       proc
+SetNewNInterrupt       proc
 
                 ;----------------------
 		; We do not want our interrupt to start
@@ -439,22 +400,25 @@ SetNew09Interrupt       proc
 		;----------------------
 		; We want to save and use old interrupt
 		;----------------------
-		mov ax, 3509h				; DOS Fn 35h - Get Interrupt Vector
-		int 21h					; ES = segment, BX = offset
+		mov ah, 35h				; DOS Fn 35h - Get Interrupt Vector
+		int 21h					; ES = segment, bx = offset
 
-		mov Old09Offset, bx			; get old offset
+		mov cs:[si], bx				; get old offset
 		mov bx, es				; BX = ES
-		mov Old09Segment, bx			; get old segment
+		mov cs:[di], bx				; get old segment
 
 		;----------------------
 		; Now we change interrupt address
 		; to our interrupt code segment
 		;----------------------
+		xor ah, ah
 		xor bx, bx				; BX = 0
 		mov es, bx				; ES = 0
+		mov bx, INTERRUPT_ADDRESS_SIZE		; BX = INTERRUPT_ADDRESS_SIZE, for multiplying
 
-		mov bx, 09h * INTERRUPT_ADDRESS_SIZE	; we change 9-th interrupt
-		mov es:[bx], offset New09Interrupt	; set offset
+		mul bx
+		mov bx, ax
+		mov es:[bx], cx				; set offset
 
 		push cs
 		pop ax					; AX -> code
@@ -470,5 +434,7 @@ SetNew09Interrupt       proc
                 endp
 ;----------------------------------------------------------
 ;----------------------------------------------------------
+
+
 
 end		Start
